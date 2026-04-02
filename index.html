@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Branded Presentation Builder</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/gitbrent/PptxGenJS@3.12.0/dist/pptxgen.bundle.js"></script>
+</head>
+<body>
+    <div id="app">
+        <!-- HEADER -->
+        <header>
+            <h1>Branded Presentation Builder</h1>
+            <p class="subtitle">Upload your branded PowerPoint, paste your content, download a ready presentation</p>
+        </header>
+
+        <!-- STEP INDICATOR -->
+        <div class="steps">
+            <div class="step active" data-step="1">
+                <span class="step-number">1</span>
+                <span class="step-label">Brand</span>
+            </div>
+            <div class="step-line"></div>
+            <div class="step" data-step="2">
+                <span class="step-number">2</span>
+                <span class="step-label">Content</span>
+            </div>
+            <div class="step-line"></div>
+            <div class="step" data-step="3">
+                <span class="step-number">3</span>
+                <span class="step-label">Download</span>
+            </div>
+        </div>
+
+        <!-- STEP 1: UPLOAD BRAND -->
+        <section id="step1" class="panel active">
+            <h2>Upload Your Brand Template</h2>
+            <p class="help-text">Upload an existing branded PowerPoint file (.pptx). We'll extract your colors, fonts, and logo automatically.</p>
+
+            <!-- Saved Brands -->
+            <div id="saved-brands-section">
+                <h3>Your Saved Brands</h3>
+                <div id="saved-brands-list" class="brands-grid"></div>
+            </div>
+
+            <hr>
+
+            <!-- Drop Zone -->
+            <div id="drop-zone">
+                <div class="drop-zone-icon">&#128196;</div>
+                <div class="drop-zone-text">Drop your branded .pptx file here</div>
+                <div class="drop-zone-subtext">or click to browse</div>
+                <input type="file" id="pptx-upload" accept=".pptx" hidden>
+            </div>
+
+            <!-- Extraction Status -->
+            <div id="extract-status" class="hidden">
+                <div class="spinner"></div>
+                <span>Extracting branding...</span>
+            </div>
+
+            <!-- Brand Preview (shown after extraction) -->
+            <div id="brand-preview" class="hidden">
+                <h3>Extracted Branding</h3>
+                <div class="brand-preview-card">
+                    <div class="brand-preview-row">
+                        <div class="brand-preview-logo-area">
+                            <div id="extracted-logo-box">
+                                <span class="no-logo-text">No logo found</span>
+                            </div>
+                            <label class="btn btn-small btn-secondary upload-logo-btn">
+                                Upload Logo
+                                <input type="file" id="manual-logo" accept="image/*" hidden>
+                            </label>
+                        </div>
+                        <div class="brand-preview-colors">
+                            <div class="color-swatch-row">
+                                <div class="color-swatch-item">
+                                    <input type="color" id="ex-primary" value="#2563EB">
+                                    <span>Primary</span>
+                                </div>
+                                <div class="color-swatch-item">
+                                    <input type="color" id="ex-secondary" value="#1E40AF">
+                                    <span>Secondary</span>
+                                </div>
+                                <div class="color-swatch-item">
+                                    <input type="color" id="ex-accent" value="#F59E0B">
+                                    <span>Accent</span>
+                                </div>
+                                <div class="color-swatch-item">
+                                    <input type="color" id="ex-text" value="#1F2937">
+                                    <span>Text</span>
+                                </div>
+                                <div class="color-swatch-item">
+                                    <input type="color" id="ex-bg" value="#FFFFFF">
+                                    <span>Background</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="brand-preview-fonts">
+                        <div class="form-group">
+                            <label for="ex-heading-font">Heading Font</label>
+                            <input type="text" id="ex-heading-font" value="Calibri Light">
+                        </div>
+                        <div class="form-group">
+                            <label for="ex-body-font">Body Font</label>
+                            <input type="text" id="ex-body-font" value="Calibri">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="brand-name">Brand Name</label>
+                        <input type="text" id="brand-name" placeholder="e.g. My Company">
+                    </div>
+                </div>
+
+                <div class="button-row">
+                    <button id="save-brand-btn" class="btn btn-secondary">Save Brand</button>
+                    <button id="use-brand-btn" class="btn btn-primary">Use This Brand &rarr;</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- STEP 2: PASTE CONTENT -->
+        <section id="step2" class="panel">
+            <div class="step2-header">
+                <h2>Paste Your Content</h2>
+                <div class="active-brand-badge" id="active-brand-badge"></div>
+            </div>
+            <p class="help-text">Paste your presentation content below. Use the format guide to structure your slides.</p>
+
+            <!-- Format Guide -->
+            <div class="format-guide">
+                <div class="format-guide-toggle" id="format-guide-toggle">How to format your content <span class="toggle-arrow">&#9660;</span></div>
+                <div class="format-guide-body hidden" id="format-guide-body">
+                    <pre>
+# Presentation Title
+Subtitle or author name
+
+---
+
+## Slide Heading
+Body text goes here. Write as much as you need.
+
+---
+
+## Bullet Points Slide
+- First point
+- Second point
+- Third point
+
+---
+
+## Two Column Slide
+LEFT:
+Content for the left column
+
+RIGHT:
+Content for the right column
+
+---
+
+# Thank You!
+your.email@company.com</pre>
+                    <p class="format-note">Use <code>---</code> to separate slides. Lines starting with <code>#</code> become title slides, <code>##</code> become content headings.</p>
+                </div>
+            </div>
+
+            <!-- Content Input -->
+            <div class="form-group">
+                <textarea id="content-input" placeholder="Paste your presentation content here...
+
+# My Presentation Title
+Subtitle goes here
+
+---
+
+## First Topic
+Your content for the first slide goes here.
+
+---
+
+## Key Points
+- Point one
+- Point two
+- Point three"></textarea>
+            </div>
+
+            <!-- Parsed Preview -->
+            <div id="parsed-preview"></div>
+
+            <div class="button-row">
+                <button id="back-to-step1" class="btn btn-ghost">&larr; Change Brand</button>
+                <button id="generate-btn" class="btn btn-primary" disabled>Generate Presentation &rarr;</button>
+            </div>
+        </section>
+
+        <!-- STEP 3: PREVIEW & DOWNLOAD -->
+        <section id="step3" class="panel">
+            <h2>Preview & Download</h2>
+            <p class="help-text">Your branded presentation is ready. Review and download.</p>
+
+            <div id="preview-container"></div>
+
+            <div class="button-row">
+                <button id="back-to-step2" class="btn btn-ghost">&larr; Edit Content</button>
+                <button id="download-btn" class="btn btn-primary btn-large">Download .pptx</button>
+            </div>
+        </section>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
