@@ -13,7 +13,7 @@
         <!-- HEADER -->
         <header>
             <h1>Branded Presentation Builder</h1>
-            <p class="subtitle">Upload your branded PowerPoint, paste your content, download a ready presentation</p>
+            <p class="subtitle">Upload your branded template, paste your content, get a ready presentation</p>
         </header>
 
         <!-- STEP INDICATOR -->
@@ -37,7 +37,7 @@
         <!-- STEP 1: UPLOAD BRAND -->
         <section id="step1" class="panel active">
             <h2>Upload Your Brand Template</h2>
-            <p class="help-text">Upload an existing branded PowerPoint file (.pptx). We'll extract your colors, fonts, and logo automatically.</p>
+            <p class="help-text">Upload your branded PowerPoint (.pptx). We extract backgrounds, colors, fonts, and logo automatically.</p>
 
             <!-- Saved Brands -->
             <div id="saved-brands-section">
@@ -58,15 +58,24 @@
             <!-- Extraction Status -->
             <div id="extract-status" class="hidden">
                 <div class="spinner"></div>
-                <span>Extracting branding...</span>
+                <span>Extracting branding (backgrounds, colors, logo, fonts)...</span>
             </div>
 
             <!-- Brand Preview (shown after extraction) -->
             <div id="brand-preview" class="hidden">
                 <h3>Extracted Branding</h3>
+
+                <!-- Background Previews -->
+                <div class="bg-preview-section">
+                    <p class="section-label">Slide Backgrounds Found:</p>
+                    <div class="bg-preview-row" id="bg-preview-row"></div>
+                </div>
+
+                <!-- Logo -->
                 <div class="brand-preview-card">
                     <div class="brand-preview-row">
                         <div class="brand-preview-logo-area">
+                            <p class="section-label">Logo:</p>
                             <div id="extracted-logo-box">
                                 <span class="no-logo-text">No logo found</span>
                             </div>
@@ -76,26 +85,27 @@
                             </label>
                         </div>
                         <div class="brand-preview-colors">
+                            <p class="section-label">Colors:</p>
                             <div class="color-swatch-row">
                                 <div class="color-swatch-item">
-                                    <input type="color" id="ex-primary" value="#2563EB">
+                                    <input type="color" id="ex-primary" value="#2E4DFF">
                                     <span>Primary</span>
                                 </div>
                                 <div class="color-swatch-item">
-                                    <input type="color" id="ex-secondary" value="#1E40AF">
-                                    <span>Secondary</span>
+                                    <input type="color" id="ex-secondary" value="#0F161A">
+                                    <span>Dark BG</span>
                                 </div>
                                 <div class="color-swatch-item">
-                                    <input type="color" id="ex-accent" value="#F59E0B">
+                                    <input type="color" id="ex-accent" value="#FF410C">
                                     <span>Accent</span>
                                 </div>
                                 <div class="color-swatch-item">
-                                    <input type="color" id="ex-text" value="#1F2937">
-                                    <span>Text</span>
+                                    <input type="color" id="ex-text" value="#FFFFFF">
+                                    <span>Text Light</span>
                                 </div>
                                 <div class="color-swatch-item">
-                                    <input type="color" id="ex-bg" value="#FFFFFF">
-                                    <span>Background</span>
+                                    <input type="color" id="ex-textdark" value="#0F161A">
+                                    <span>Text Dark</span>
                                 </div>
                             </div>
                         </div>
@@ -103,11 +113,11 @@
                     <div class="brand-preview-fonts">
                         <div class="form-group">
                             <label for="ex-heading-font">Heading Font</label>
-                            <input type="text" id="ex-heading-font" value="Calibri Light">
+                            <input type="text" id="ex-heading-font" value="Arial">
                         </div>
                         <div class="form-group">
                             <label for="ex-body-font">Body Font</label>
-                            <input type="text" id="ex-body-font" value="Calibri">
+                            <input type="text" id="ex-body-font" value="Arial">
                         </div>
                     </div>
                     <div class="form-group">
@@ -129,7 +139,7 @@
                 <h2>Paste Your Content</h2>
                 <div class="active-brand-badge" id="active-brand-badge"></div>
             </div>
-            <p class="help-text">Paste your presentation content below. Use the format guide to structure your slides.</p>
+            <p class="help-text">Paste your presentation content. Each slide is separated by a blank line or <code>---</code>.</p>
 
             <!-- Format Guide -->
             <div class="format-guide">
@@ -137,34 +147,39 @@
                 <div class="format-guide-body hidden" id="format-guide-body">
                     <pre>
 # Presentation Title
-Subtitle or author name
+Subtitle text
 
 ---
 
 ## Slide Heading
 Body text goes here. Write as much as you need.
+More lines become part of the same slide.
 
 ---
 
-## Bullet Points Slide
+## Bullet Points
 - First point
 - Second point
 - Third point
 
 ---
 
-## Two Column Slide
+## Two Columns
 LEFT:
-Content for the left column
+Content for left side
 
 RIGHT:
-Content for the right column
+Content for right side
 
 ---
 
 # Thank You!
-your.email@company.com</pre>
-                    <p class="format-note">Use <code>---</code> to separate slides. Lines starting with <code>#</code> become title slides, <code>##</code> become content headings.</p>
+Contact info here</pre>
+                    <p class="format-note">
+                        <strong>Tips:</strong> Use <code>#</code> for title/cover slides (dark background),
+                        <code>##</code> for content headings, <code>---</code> or blank lines to separate slides,
+                        <code>- </code> for bullet points.
+                    </p>
                 </div>
             </div>
 
@@ -178,14 +193,19 @@ Subtitle goes here
 ---
 
 ## First Topic
-Your content for the first slide goes here.
+Your content for the first slide.
 
 ---
 
 ## Key Points
 - Point one
 - Point two
-- Point three"></textarea>
+- Point three
+
+---
+
+# Thank You!
+email@company.com"></textarea>
             </div>
 
             <!-- Parsed Preview -->
@@ -193,14 +213,14 @@ Your content for the first slide goes here.
 
             <div class="button-row">
                 <button id="back-to-step1" class="btn btn-ghost">&larr; Change Brand</button>
-                <button id="generate-btn" class="btn btn-primary" disabled>Generate Presentation &rarr;</button>
+                <button id="generate-btn" class="btn btn-primary" disabled>Preview &amp; Download &rarr;</button>
             </div>
         </section>
 
         <!-- STEP 3: PREVIEW & DOWNLOAD -->
         <section id="step3" class="panel">
             <h2>Preview & Download</h2>
-            <p class="help-text">Your branded presentation is ready. Review and download.</p>
+            <p class="help-text">Your branded presentation is ready.</p>
 
             <div id="preview-container"></div>
 
