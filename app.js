@@ -203,62 +203,83 @@ function parseThemeFonts(xmlString) {
 
 async function extractBackgrounds(zip) {
     const backgrounds = { title: null, dark: null, light: null };
-    const imageCache = {};
-
-    // Collect all background images from slide layouts
     const layoutImages = [];
+    const seenFilenames = new Set();
+
+    // Helper to add an image candidate
+    const addImage = async (filename, source) => {
+        if (seenFilenames.has(filename)) return;
+        seenFilenames.add(filename);
+        if (!filename.match(/\.(png|jpg|jpeg)$/i)) return;
+
+        const mediaFile = zip.file('ppt/media/' + filename);
+        if (!mediaFile) return;
+
+        const data = await mediaFile.async('arraybuffer');
+        // Backgrounds are large images
+        if (data.byteLength < 50000) return;
+
+        const rawDataUrl = arrayBufferToDataURL(data, getMime(filename));
+        // Compress to keep file size manageable for PptxGenJS
+        const compressed = await compressImage(rawDataUrl, 1600, 0.82);
+
+        layoutImages.push({
+            source, filename,
+            size: data.byteLength,
+            dataUrl: compressed,
+        });
+        console.log(`Found bg: ${filename} (${(data.byteLength/1024).toFixed(0)}KB → compressed)`);
+    };
 
     // Check slide layouts for background images
     for (let i = 1; i <= 30; i++) {
         const relsFile = zip.file(`ppt/slideLayouts/_rels/slideLayout${i}.xml.rels`);
         if (!relsFile) continue;
-
         const relsXml = await relsFile.async('string');
-        const imgMatches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
-
-        for (const m of imgMatches) {
-            const filename = m[1];
-            if (!filename.match(/\.(png|jpg|jpeg)$/i)) continue;
-
-            const mediaFile = zip.file('ppt/media/' + filename);
-            if (!mediaFile) continue;
-
-            const data = await mediaFile.async('arraybuffer');
-            // Only consider large images (backgrounds are big, icons are small)
-            if (data.byteLength < 50000) continue;
-
-            const dataUrl = arrayBufferToDataURL(data, getMime(filename));
-            layoutImages.push({
-                layout: i,
-                filename,
-                size: data.byteLength,
-                dataUrl,
-            });
-        }
+        const matches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
+        for (const m of matches) await addImage(m[1], `layout${i}`);
     }
 
-    // Also check first slide for title background
+    // Check first slide for title background
     const slide1Rels = zip.file('ppt/slides/_rels/slide1.xml.rels');
     if (slide1Rels) {
         const relsXml = await slide1Rels.async('string');
-        const imgMatches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
-        for (const m of imgMatches) {
-            const filename = m[1];
-            if (!filename.match(/\.(png|jpg|jpeg)$/i)) continue;
-            const mediaFile = zip.file('ppt/media/' + filename);
-            if (!mediaFile) continue;
-            const data = await mediaFile.async('arraybuffer');
-            if (data.byteLength < 50000) continue;
-            const dataUrl = arrayBufferToDataURL(data, getMime(filename));
-            layoutImages.push({ layout: 0, filename, size: data.byteLength, dataUrl });
-        }
+        const matches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
+        for (const m of matches) await addImage(m[1], 'slide1');
     }
 
+    // Check slide masters too
+    for (let m = 1; m <= 2; m++) {
+        const relsFile = zip.file(`ppt/slideMasters/_rels/slideMaster${m}.xml.rels`);
+        if (!relsFile) continue;
+        const relsXml = await relsFile.async('string');
+        const matches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
+        for (const match of matches) await addImage(match[1], `master${m}`);
+    }
+
+    console.log(`Total backgrounds found: ${layoutImages.length}`);
     if (layoutImages.length === 0) return backgrounds;
 
-    // Classify backgrounds by analyzing pixel brightness
-    const classified = await classifyBackgrounds(layoutImages);
-    return classified;
+    return await classifyBackgrounds(layoutImages);
+}
+
+// Compress image to reduce size
+function compressImage(dataUrl, maxWidth, quality) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const scale = Math.min(1, maxWidth / img.width);
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            // Use JPEG for backgrounds (smaller than PNG)
+            resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+    });
 }
 
 async function classifyBackgrounds(images) {
@@ -734,7 +755,9 @@ downloadBtn.addEventListener('click', () => {
         // Background: image if available, else solid color
         const bgImg = b.backgrounds[s.bgType];
         if (bgImg) {
-            slide.background = { data: bgImg };
+            // PptxGenJS expects data without the "data:" URI prefix
+            const bgData = bgImg.startsWith('data:') ? bgImg.substring(5) : bgImg;
+            slide.background = { data: bgData };
         } else {
             slide.background = { color: isDark ? hex(b.secondaryColor) : 'F5F6F7' };
         }
