@@ -138,8 +138,11 @@ async function extractBrandFromPptx(file) {
     brand.backgrounds = backgrounds;
 
     // 3. Extract logo
-    const logo = await extractLogo(zip);
-    if (logo) brand.logo = logo;
+    const logoResult = await extractLogo(zip);
+    if (logoResult) {
+        brand.logo = logoResult.dataUrl;
+        brand.logoIsLight = logoResult.isLight;
+    }
 
     return brand;
 }
@@ -202,65 +205,98 @@ function parseThemeFonts(xmlString) {
 // ============================================================
 
 async function extractBackgrounds(zip) {
-    const backgrounds = { title: null, dark: null, light: null };
-    const layoutImages = [];
-    const seenFilenames = new Set();
+    // NEW STRATEGY: walk through the template's actual slides IN ORDER and grab
+    // the background image of each one. We then cycle through this ordered list
+    // when generating, so the output visually mirrors the template's flow.
+    const orderedBackgrounds = []; // [{ dataUrl, brightness, source }, ...]
+    const filenameCache = new Map(); // filename -> { dataUrl, brightness } (cached compress)
 
-    // Helper to add an image candidate
-    const addImage = async (filename, source) => {
-        if (seenFilenames.has(filename)) return;
-        seenFilenames.add(filename);
-        if (!filename.match(/\.(png|jpg|jpeg)$/i)) return;
-
+    const loadAndCompress = async (filename) => {
+        if (filenameCache.has(filename)) return filenameCache.get(filename);
+        if (!filename.match(/\.(png|jpg|jpeg)$/i)) return null;
         const mediaFile = zip.file('ppt/media/' + filename);
-        if (!mediaFile) return;
-
+        if (!mediaFile) return null;
         const data = await mediaFile.async('arraybuffer');
-        // Backgrounds are large images
-        if (data.byteLength < 50000) return;
-
+        // Backgrounds are large images (skip tiny icons)
+        if (data.byteLength < 30000) return null;
         const rawDataUrl = arrayBufferToDataURL(data, getMime(filename));
-        // Compress to keep file size manageable for PptxGenJS
         const compressed = await compressImage(rawDataUrl, 1600, 0.82);
-
-        layoutImages.push({
-            source, filename,
-            size: data.byteLength,
-            dataUrl: compressed,
-        });
-        console.log(`Found bg: ${filename} (${(data.byteLength/1024).toFixed(0)}KB → compressed)`);
+        const brightness = await getImageBrightness(compressed);
+        const entry = { dataUrl: compressed, brightness, filename };
+        filenameCache.set(filename, entry);
+        return entry;
     };
 
-    // Check slide layouts for background images
-    for (let i = 1; i <= 30; i++) {
-        const relsFile = zip.file(`ppt/slideLayouts/_rels/slideLayout${i}.xml.rels`);
-        if (!relsFile) continue;
+    // Find background image filename referenced by a layout's rels (largest image)
+    const layoutBgCache = new Map();
+    const getLayoutBackground = async (layoutNum) => {
+        if (layoutBgCache.has(layoutNum)) return layoutBgCache.get(layoutNum);
+        const relsFile = zip.file(`ppt/slideLayouts/_rels/slideLayout${layoutNum}.xml.rels`);
+        if (!relsFile) { layoutBgCache.set(layoutNum, null); return null; }
         const relsXml = await relsFile.async('string');
         const matches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
-        for (const m of matches) await addImage(m[1], `layout${i}`);
+        // Pick the LARGEST image referenced (the background, not small icons)
+        let best = null;
+        for (const m of matches) {
+            const entry = await loadAndCompress(m[1]);
+            if (entry) { best = entry; break; } // first valid large image is usually the background
+        }
+        layoutBgCache.set(layoutNum, best);
+        return best;
+    };
+
+    // Walk through ALL slides in the template in order
+    let slideIdx = 1;
+    while (true) {
+        const slideRels = zip.file(`ppt/slides/_rels/slide${slideIdx}.xml.rels`);
+        if (!slideRels) break;
+        const relsXml = await slideRels.async('string');
+
+        // First try: slide has its own background image embedded
+        const imageMatches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
+        let chosen = null;
+        for (const m of imageMatches) {
+            const entry = await loadAndCompress(m[1]);
+            if (entry) { chosen = entry; break; }
+        }
+
+        // Fallback: use the slide's layout background
+        if (!chosen) {
+            const layoutMatch = relsXml.match(/slideLayouts\/slideLayout(\d+)\.xml/);
+            if (layoutMatch) {
+                chosen = await getLayoutBackground(parseInt(layoutMatch[1], 10));
+            }
+        }
+
+        if (chosen) {
+            orderedBackgrounds.push({ ...chosen, slideIdx });
+            console.log(`Slide ${slideIdx}: ${chosen.filename} (brightness=${chosen.brightness.toFixed(0)})`);
+        }
+        slideIdx++;
+        if (slideIdx > 100) break; // safety
     }
 
-    // Check first slide for title background
-    const slide1Rels = zip.file('ppt/slides/_rels/slide1.xml.rels');
-    if (slide1Rels) {
-        const relsXml = await slide1Rels.async('string');
-        const matches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
-        for (const m of matches) await addImage(m[1], 'slide1');
+    // Deduplicate consecutive identical backgrounds (template often repeats the same layout)
+    // but KEEP order — just remove exact duplicates that are next to each other
+    const deduped = [];
+    let lastFilename = null;
+    for (const bg of orderedBackgrounds) {
+        if (bg.filename !== lastFilename) {
+            deduped.push(bg);
+            lastFilename = bg.filename;
+        }
     }
 
-    // Check slide masters too
-    for (let m = 1; m <= 2; m++) {
-        const relsFile = zip.file(`ppt/slideMasters/_rels/slideMaster${m}.xml.rels`);
-        if (!relsFile) continue;
-        const relsXml = await relsFile.async('string');
-        const matches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
-        for (const match of matches) await addImage(match[1], `master${m}`);
-    }
+    console.log(`Extracted ${deduped.length} unique background(s) from ${orderedBackgrounds.length} template slides`);
 
-    console.log(`Total backgrounds found: ${layoutImages.length}`);
-    if (layoutImages.length === 0) return backgrounds;
-
-    return await classifyBackgrounds(layoutImages);
+    // Build BOTH the ordered sequence AND the legacy {title, dark, light} categorization
+    // for backward compat with the preview UI
+    const sequence = deduped.map(b => ({ dataUrl: b.dataUrl, brightness: b.brightness }));
+    const legacy = await classifyBackgrounds(deduped.map(b => ({
+        filename: b.filename, size: 0, dataUrl: b.dataUrl, brightness: b.brightness
+    })));
+    legacy.sequence = sequence;
+    return legacy;
 }
 
 // Compress image to reduce size
@@ -287,20 +323,20 @@ async function classifyBackgrounds(images) {
     const analyzed = [];
 
     for (const img of images) {
-        const brightness = await getImageBrightness(img.dataUrl);
+        const brightness = img.brightness != null ? img.brightness : await getImageBrightness(img.dataUrl);
         analyzed.push({ ...img, brightness });
     }
 
     // Sort by brightness
     analyzed.sort((a, b) => a.brightness - b.brightness);
 
-    // Deduplicate by size (same size = likely same image)
+    // Deduplicate by filename
     const unique = [];
-    const seenSizes = new Set();
+    const seenFn = new Set();
     for (const a of analyzed) {
-        if (!seenSizes.has(a.size)) {
+        if (!seenFn.has(a.filename)) {
             unique.push(a);
-            seenSizes.add(a.size);
+            seenFn.add(a.filename);
         }
     }
 
@@ -353,65 +389,91 @@ function getImageBrightness(dataUrl) {
 // ============================================================
 
 async function extractLogo(zip) {
-    // Strategy: find images in slide master that are NOT full-size backgrounds
-    // Also check the white-on-dark logo pattern (small wide images)
-    const candidates = [];
-
-    // Check slide masters
-    for (let m = 1; m <= 2; m++) {
-        const relsFile = zip.file(`ppt/slideMasters/_rels/slideMaster${m}.xml.rels`);
-        if (!relsFile) continue;
-        const relsXml = await relsFile.async('string');
-        const matches = [...relsXml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)];
-        for (const match of matches) {
-            const filename = match[1];
-            if (!filename.match(/\.(png|jpg|jpeg)$/i)) continue;
-            candidates.push(filename);
-        }
-    }
-
-    // Check slide layouts for small images (logos tend to be embedded in layout backgrounds)
-    // Also scan all media for the logo pattern: wide aspect ratio, small-medium file
+    // Scan ALL media for wide-aspect logo candidates and pick the one with the
+    // most visible (non-transparent, non-pure-white) content.
     const allMedia = [];
     zip.folder('ppt/media').forEach((path, file) => {
         if (path.match(/\.(png|jpg|jpeg)$/i)) allMedia.push(path);
     });
 
-    // Analyze candidates first, then fall back to scanning all media
-    const searchList = candidates.length > 0 ? candidates : allMedia.slice(0, 20);
-
     let bestLogo = null;
     let bestScore = -1;
 
-    for (const filename of searchList) {
+    for (const filename of allMedia) {
         const mediaFile = zip.file('ppt/media/' + filename);
         if (!mediaFile) continue;
 
         const data = await mediaFile.async('arraybuffer');
         // Skip very large files (backgrounds) and very tiny files (dots/icons)
-        if (data.byteLength > 500000 || data.byteLength < 500) continue;
+        if (data.byteLength > 500000 || data.byteLength < 800) continue;
 
         const dataUrl = arrayBufferToDataURL(data, getMime(filename));
-
-        // Check dimensions
         const dims = await getImageDimensions(dataUrl);
         if (!dims) continue;
 
-        // Logo heuristic: wide aspect ratio (width > height * 1.5), reasonable size
+        // Logo heuristic: wide aspect ratio
         const aspect = dims.width / dims.height;
+        if (aspect < 1.5 || aspect > 15) continue;
+        if (dims.width < 150 || dims.width > 3000) continue;
+        if (dims.height < 20 || dims.height > 600) continue;
+
+        // Analyze pixel content — must have visible (non-blank) pixels
+        const analysis = await analyzeLogoPixels(dataUrl);
+        if (!analysis || analysis.visibleRatio < 0.02) continue;
+
         let score = 0;
-        if (aspect > 2) score += 3;       // Very wide = likely text logo
-        else if (aspect > 1.5) score += 2;
-        if (dims.width > 200 && dims.width < 3000) score += 1;
-        if (data.byteLength > 2000 && data.byteLength < 200000) score += 1;
+        if (aspect > 2 && aspect < 8) score += 3;
+        else score += 1;
+        // Density of visible pixels: logos typically have 5-50% visible content
+        if (analysis.visibleRatio > 0.05 && analysis.visibleRatio < 0.6) score += 4;
+        else score += 1;
+        if (data.byteLength > 3000 && data.byteLength < 200000) score += 1;
 
         if (score > bestScore) {
             bestScore = score;
-            bestLogo = dataUrl;
+            bestLogo = { dataUrl, isLight: analysis.isLight };
         }
     }
 
     return bestLogo;
+}
+
+function analyzeLogoPixels(dataUrl) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const w = Math.min(img.width, 200);
+                const h = Math.round(img.height * (w / img.width));
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, w, h);
+                const data = ctx.getImageData(0, 0, w, h).data;
+                let visible = 0;
+                let lightSum = 0;
+                let total = 0;
+                for (let i = 0; i < data.length; i += 4) {
+                    total++;
+                    const a = data[i + 3];
+                    if (a < 30) continue;
+                    const r = data[i], g = data[i + 1], b = data[i + 2];
+                    // Skip near-white pixels (background)
+                    if (r > 240 && g > 240 && b > 240) continue;
+                    visible++;
+                    lightSum += (r + g + b) / 3;
+                }
+                const visibleRatio = visible / total;
+                const avgLight = visible > 0 ? lightSum / visible : 0;
+                resolve({ visibleRatio, isLight: avgLight > 180 });
+            } catch (e) {
+                resolve(null);
+            }
+        };
+        img.onerror = () => resolve(null);
+        img.src = dataUrl;
+    });
 }
 
 function getImageDimensions(dataUrl) {
@@ -440,11 +502,15 @@ function showBrandPreview(brand) {
     // Logo
     const logoBox = $('#extracted-logo-box');
     if (brand.logo) {
-        logoBox.innerHTML = `<img src="${brand.logo}" alt="Logo">`;
+        // Show logo on dark backdrop if it's a light/white logo, so it's visible in preview
+        const bgStyle = brand.logoIsLight ? 'background:#0F161A;' : 'background:#FFFFFF;';
+        logoBox.innerHTML = `<img src="${brand.logo}" alt="Logo" style="${bgStyle}padding:4px;">`;
         logoBox.dataset.logo = brand.logo;
+        logoBox.dataset.logoLight = brand.logoIsLight ? '1' : '0';
     } else {
         logoBox.innerHTML = '<span class="no-logo-text">No logo found</span>';
         logoBox.dataset.logo = '';
+        logoBox.dataset.logoLight = '0';
     }
 
     // Background previews
@@ -463,8 +529,8 @@ function showBrandPreview(brand) {
         bgPreviewRow.innerHTML = '<p class="no-brands">No background images found. Solid colors will be used.</p>';
     }
 
-    // Store backgrounds on a temp object for save/use
-    brandPreview.dataset.backgrounds = JSON.stringify(brand.backgrounds);
+    // Store backgrounds in a JS variable (sequence may include many large data URLs)
+    window.__previewBackgrounds = brand.backgrounds;
     brandPreview.classList.remove('hidden');
 }
 
@@ -472,8 +538,7 @@ function getBrandFromPreview() {
     const name = brandNameInput.value.trim();
     if (!name) { alert('Please enter a brand name.'); return null; }
     const logoBox = $('#extracted-logo-box');
-    let backgrounds = { title: null, dark: null, light: null };
-    try { backgrounds = JSON.parse(brandPreview.dataset.backgrounds || '{}'); } catch(e) {}
+    const backgrounds = window.__previewBackgrounds || { title: null, dark: null, light: null, sequence: [] };
 
     return {
         name,
@@ -485,6 +550,7 @@ function getBrandFromPreview() {
         headingFont: $('#ex-heading-font').value || 'Arial',
         bodyFont: $('#ex-body-font').value || 'Arial',
         logo: logoBox.dataset.logo || null,
+        logoIsLight: logoBox.dataset.logoLight === '1',
         backgrounds,
     };
 }
@@ -665,7 +731,7 @@ function parseContent(text) {
             const leftMatch = bodyText.match(/LEFT:\s*([\s\S]*?)(?=RIGHT:)/i);
             const rightMatch = bodyText.match(/RIGHT:\s*([\s\S]*)/i);
             slides.push({
-                type: 'two-column', bgType: 'light',
+                type: 'two-column', bgType: 'auto',
                 data: {
                     heading,
                     left: leftMatch ? leftMatch[1].trim() : '',
@@ -683,7 +749,7 @@ function parseContent(text) {
                 .filter(Boolean)
                 .join('\n');
             slides.push({
-                type: 'bullets', bgType: 'light',
+                type: 'bullets', bgType: 'auto',
                 data: { heading, bullets }
             });
             continue;
@@ -691,7 +757,7 @@ function parseContent(text) {
 
         // Regular content
         slides.push({
-            type: 'content', bgType: 'light',
+            type: 'content', bgType: 'auto',
             data: { heading, body: bodyText }
         });
     }
@@ -792,30 +858,56 @@ downloadBtn.addEventListener('click', () => {
 
     const hex = (c) => (c || '#000000').replace('#', '');
 
-    parsedSlides.forEach((s) => {
+    // Build the background sequence: cycle through ALL the template's slide
+    // backgrounds in order, so the generated deck mirrors the template's flow.
+    const sequence = (b.backgrounds && b.backgrounds.sequence) || [];
+    const pickBg = (slideIndex, slideType) => {
+        if (sequence.length === 0) {
+            // Fall back to the legacy 3-bucket system
+            const key = slideType === 'title' || slideType === 'thank-you' ? 'title' : 'auto';
+            const fallback = b.backgrounds[key === 'auto' ? 'light' : key] || b.backgrounds.dark || b.backgrounds.title;
+            return fallback ? { dataUrl: fallback, brightness: 128 } : null;
+        }
+        // Title slide always uses sequence[0] (first slide of template)
+        if ((slideType === 'title' || slideType === 'thank-you') && sequence.length > 0) {
+            return sequence[0];
+        }
+        // Content slides cycle through sequence[1..] in order
+        if (sequence.length === 1) return sequence[0];
+        const contentSeq = sequence.slice(1);
+        return contentSeq[(slideIndex - 1) % contentSeq.length];
+    };
+
+    parsedSlides.forEach((s, idx) => {
         const slide = pptx.addSlide();
-        const isDark = s.bgType === 'title' || s.bgType === 'dark';
+
+        // Pick background and derive text colors from its actual brightness
+        const bgEntry = pickBg(idx, s.type);
+        const bgBrightness = bgEntry ? bgEntry.brightness : (s.bgType === 'title' || s.bgType === 'dark' ? 30 : 240);
+        const isDark = bgBrightness < 140;
         const textColor = isDark ? hex(b.textLight) : hex(b.textDark);
         const headingColor = isDark ? hex(b.textLight) : hex(b.primaryColor);
 
-        // Background: image if available, else solid color
-        const bgImg = b.backgrounds[s.bgType];
-        if (bgImg) {
-            // PptxGenJS expects data without the "data:" URI prefix
+        if (bgEntry) {
+            const bgImg = bgEntry.dataUrl;
             const bgData = bgImg.startsWith('data:') ? bgImg.substring(5) : bgImg;
             slide.background = { data: bgData };
         } else {
             slide.background = { color: isDark ? hex(b.secondaryColor) : 'F5F6F7' };
         }
 
-        // Logo on every slide (bottom-left like Drata template)
+        // Logo: only render if it will be visible against the background
+        // (white logo on dark bg = visible; white logo on light bg = invisible, skip)
         if (b.logo) {
-            slide.addImage({
-                data: b.logo,
-                x: 0.4, y: 6.8,
-                w: 1.2, h: 0.4,
-                sizing: { type: 'contain', w: 1.2, h: 0.4 },
-            });
+            const logoVisible = b.logoIsLight ? isDark : !isDark;
+            if (logoVisible) {
+                slide.addImage({
+                    data: b.logo,
+                    x: 0.4, y: 6.8,
+                    w: 1.2, h: 0.4,
+                    sizing: { type: 'contain', w: 1.2, h: 0.4 },
+                });
+            }
         }
 
         if (s.type === 'title' || s.type === 'thank-you') {
