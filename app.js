@@ -835,7 +835,24 @@ generateBtn.addEventListener('click', () => {
 
 function renderPreview() {
     const b = activeBrand;
-    previewContainer.innerHTML = parsedSlides.map((s, i) => {
+    const sequence = (b.backgrounds && b.backgrounds.sequence) || [];
+
+    // Auto-prepended brand cover slide preview
+    let coverHtml = '';
+    if (sequence.length > 0) {
+        const coverBg = sequence[0];
+        const coverIsDark = coverBg.brightness < 140;
+        const coverColor = coverIsDark ? b.textLight : b.textDark;
+        coverHtml = `
+        <div class="preview-slide" style="background-image:url('${coverBg.dataUrl}');background-size:cover;background-position:center;">
+            <span class="preview-slide-number">Cover</span>
+            <div style="flex:1;display:flex;align-items:center;justify-content:center;">
+                <div style="font-size:54px;font-weight:800;letter-spacing:2px;color:${coverColor};font-family:'${b.headingFont}',sans-serif;text-align:center;">${escapeHTML((b.name || 'Presentation').toUpperCase())}</div>
+            </div>
+        </div>`;
+    }
+
+    previewContainer.innerHTML = coverHtml + parsedSlides.map((s, i) => {
         const isDark = s.bgType === 'title' || s.bgType === 'dark';
         const textColor = isDark ? b.textLight : b.textDark;
         const headingColor = isDark ? b.textLight : b.primaryColor;
@@ -913,6 +930,24 @@ downloadBtn.addEventListener('click', () => {
         const contentSeq = sequence.slice(1);
         return contentSeq[(slideIndex - 1) % contentSeq.length];
     };
+
+    // ALWAYS prepend a brand cover slide using the template's first background
+    // and the brand name as a big centered headline (mirrors the template's
+    // own cover slide, e.g. the giant "DRATA" cover in the Drata template).
+    if (sequence.length > 0) {
+        const cover = pptx.addSlide();
+        const coverBg = sequence[0];
+        const coverIsDark = coverBg.brightness < 140;
+        const coverData = coverBg.dataUrl.startsWith('data:') ? coverBg.dataUrl.substring(5) : coverBg.dataUrl;
+        cover.background = { data: coverData };
+        const coverColor = coverIsDark ? hex(b.textLight) : hex(b.textDark);
+        cover.addText((b.name || 'Presentation').toUpperCase(), {
+            x: 0.5, y: 2.6, w: 12.3, h: 2.2,
+            fontSize: 96, fontFace: b.headingFont,
+            color: coverColor, bold: true,
+            align: 'center', valign: 'middle',
+        });
+    }
 
     parsedSlides.forEach((s, idx) => {
         const slide = pptx.addSlide();
