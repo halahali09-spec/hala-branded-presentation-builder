@@ -837,22 +837,64 @@ function renderPreview() {
     const b = activeBrand;
     const sequence = (b.backgrounds && b.backgrounds.sequence) || [];
 
-    // Auto-prepended brand cover slide preview
-    let coverHtml = '';
-    if (sequence.length > 0) {
+    let introHtml = '';
+    let contentSlidesForPreview = parsedSlides;
+
+    if (sequence.length > 0 && parsedSlides.length > 0) {
+        // Cover
         const coverBg = sequence[0];
         const coverIsDark = coverBg.brightness < 140;
         const coverColor = coverIsDark ? b.textLight : b.textDark;
-        coverHtml = `
+        introHtml += `
         <div class="preview-slide" style="background-image:url('${coverBg.dataUrl}');background-size:cover;background-position:center;">
             <span class="preview-slide-number">Cover</span>
             <div style="flex:1;display:flex;align-items:center;justify-content:center;">
                 <div style="font-size:54px;font-weight:800;letter-spacing:2px;color:${coverColor};font-family:'${b.headingFont}',sans-serif;text-align:center;">${escapeHTML((b.name || 'Presentation').toUpperCase())}</div>
             </div>
         </div>`;
+
+        // Title
+        const titleBg = sequence[1] || sequence[0];
+        const titleIsDark = titleBg.brightness < 140;
+        const titleHeadingColor = titleIsDark ? b.textLight : b.primaryColor;
+        const titleSubColor = titleIsDark ? b.textLight : b.textDark;
+        const first = parsedSlides[0];
+        const headlineText = first.data.title || first.data.heading || b.name || 'Presentation';
+        const subtitleText = first.data.subtitle || first.data.body || '';
+        introHtml += `
+        <div class="preview-slide" style="background-image:url('${titleBg.dataUrl}');background-size:cover;background-position:center;">
+            <span class="preview-slide-number">Title</span>
+            <div style="flex:1;display:flex;flex-direction:column;justify-content:center;padding:0 20px;">
+                <div style="font-size:32px;font-weight:800;color:${titleHeadingColor};font-family:'${b.headingFont}',sans-serif;line-height:1.15;">${escapeHTML(headlineText)}</div>
+                ${subtitleText ? `<div style="font-size:14px;color:${titleSubColor};margin-top:14px;opacity:0.9;font-family:'${b.bodyFont}',sans-serif;">${escapeHTML(subtitleText)}</div>` : ''}
+            </div>
+        </div>`;
+
+        // Agenda
+        const agendaItems = parsedSlides.slice(1)
+            .map(s => s.data.heading || s.data.title || '')
+            .filter(Boolean);
+        if (agendaItems.length > 0) {
+            const agendaBg = sequence[2] || sequence[1] || sequence[0];
+            const agendaIsDark = agendaBg.brightness < 140;
+            const agendaHeading = agendaIsDark ? b.textLight : b.primaryColor;
+            const agendaText = agendaIsDark ? b.textLight : b.textDark;
+            const agendaList = agendaItems.map((t, i) =>
+                `<li style="margin-bottom:6px;"><span style="opacity:0.6;font-weight:600;">${String(i + 1).padStart(2, '0')}.</span> ${escapeHTML(t)}</li>`
+            ).join('');
+            introHtml += `
+            <div class="preview-slide" style="background-image:url('${agendaBg.dataUrl}');background-size:cover;background-position:center;">
+                <span class="preview-slide-number">Agenda</span>
+                <div style="font-size:22px;font-weight:700;color:${agendaHeading};font-family:'${b.headingFont}',sans-serif;margin-bottom:14px;">Today's Agenda</div>
+                <ul style="list-style:none;padding:0;margin:0;font-size:14px;color:${agendaText};font-family:'${b.bodyFont}',sans-serif;">${agendaList}</ul>
+            </div>`;
+        }
+
+        // First user slide is now used as the title slide, so skip it in content
+        contentSlidesForPreview = parsedSlides.slice(1);
     }
 
-    previewContainer.innerHTML = coverHtml + parsedSlides.map((s, i) => {
+    previewContainer.innerHTML = introHtml + contentSlidesForPreview.map((s, i) => {
         const isDark = s.bgType === 'title' || s.bgType === 'dark';
         const textColor = isDark ? b.textLight : b.textDark;
         const headingColor = isDark ? b.textLight : b.primaryColor;
@@ -931,41 +973,102 @@ downloadBtn.addEventListener('click', () => {
         return contentSeq[(slideIndex - 1) % contentSeq.length];
     };
 
-    // ALWAYS prepend a brand cover slide using the template's first background
-    // and the brand name as a big centered headline (mirrors the template's
-    // own cover slide, e.g. the giant "DRATA" cover in the Drata template).
+    // Helper to set a slide background and return its brightness/colors
+    const applyBg = (slide, bgEntry) => {
+        if (!bgEntry) {
+            slide.background = { color: '0F161A' };
+            return { isDark: true, textColor: hex(b.textLight), headingColor: hex(b.textLight) };
+        }
+        const bgData = bgEntry.dataUrl.startsWith('data:') ? bgEntry.dataUrl.substring(5) : bgEntry.dataUrl;
+        slide.background = { data: bgData };
+        const isDark = bgEntry.brightness < 140;
+        return {
+            isDark,
+            textColor: isDark ? hex(b.textLight) : hex(b.textDark),
+            headingColor: isDark ? hex(b.textLight) : hex(b.primaryColor),
+        };
+    };
+
+    // === AUTO-PREPENDED INTRO SLIDES ===
+    // 1. Cover (brand name on template's first background)
+    // 2. Title (user's first slide as big headline + tagline)
+    // 3. Agenda (auto-built from headings of remaining content slides)
     if (sequence.length > 0) {
+        // -- Slide 1: COVER --
         const cover = pptx.addSlide();
-        const coverBg = sequence[0];
-        const coverIsDark = coverBg.brightness < 140;
-        const coverData = coverBg.dataUrl.startsWith('data:') ? coverBg.dataUrl.substring(5) : coverBg.dataUrl;
-        cover.background = { data: coverData };
-        const coverColor = coverIsDark ? hex(b.textLight) : hex(b.textDark);
+        const coverColors = applyBg(cover, sequence[0]);
         cover.addText((b.name || 'Presentation').toUpperCase(), {
             x: 0.5, y: 2.6, w: 12.3, h: 2.2,
             fontSize: 96, fontFace: b.headingFont,
-            color: coverColor, bold: true,
+            color: coverColors.textColor, bold: true,
             align: 'center', valign: 'middle',
         });
+
+        // -- Slide 2: TITLE -- (uses user's first slide as headline + subtitle)
+        const titleSlide = pptx.addSlide();
+        const titleBg = sequence[1] || sequence[0];
+        const titleColors = applyBg(titleSlide, titleBg);
+        const firstUserSlide = parsedSlides[0];
+        const headlineText = firstUserSlide ? (firstUserSlide.data.title || firstUserSlide.data.heading || b.name) : (b.name || 'Presentation');
+        const subtitleText = firstUserSlide ? (firstUserSlide.data.subtitle || firstUserSlide.data.body || '') : '';
+        titleSlide.addText(headlineText, {
+            x: 0.6, y: 1.6, w: 12.1, h: 3.2,
+            fontSize: 60, fontFace: b.headingFont,
+            color: titleColors.headingColor, bold: true,
+            align: 'left', valign: 'middle',
+        });
+        if (subtitleText) {
+            titleSlide.addText(subtitleText, {
+                x: 0.6, y: 5.0, w: 12.1, h: 1.6,
+                fontSize: 18, fontFace: b.bodyFont,
+                color: titleColors.textColor,
+                align: 'left', valign: 'top',
+            });
+        }
+
+        // -- Slide 3: AGENDA -- (auto-built from headings of all content slides after the first)
+        const agendaItems = parsedSlides.slice(1)
+            .map(s => s.data.heading || s.data.title || '')
+            .filter(Boolean);
+        if (agendaItems.length > 0) {
+            const agendaSlide = pptx.addSlide();
+            const agendaBg = sequence[2] || sequence[1] || sequence[0];
+            const agendaColors = applyBg(agendaSlide, agendaBg);
+            agendaSlide.addText("Today's Agenda", {
+                x: 0.6, y: 0.6, w: 12.1, h: 1.0,
+                fontSize: 36, fontFace: b.headingFont,
+                color: agendaColors.headingColor, bold: true,
+            });
+            const numbered = agendaItems.map((text, i) => ({
+                text: `${String(i + 1).padStart(2, '0')}.  ${text}`,
+                options: { fontSize: 22, fontFace: b.bodyFont, color: agendaColors.textColor, breakLine: true },
+            }));
+            agendaSlide.addText(numbered, {
+                x: 0.8, y: 1.8, w: 11.7, h: 5.0,
+                valign: 'top',
+            });
+        }
     }
 
-    parsedSlides.forEach((s, idx) => {
+    // The first user slide has been used as the title slide above, so we
+    // skip it in the main content loop. Everything else renders as normal.
+    const contentSlides = sequence.length > 0 && parsedSlides.length > 0
+        ? parsedSlides.slice(1)
+        : parsedSlides;
+
+    // Content slides cycle through sequence starting AFTER cover/title/agenda
+    // (cover used sequence[0], title used sequence[1], agenda used sequence[2])
+    const contentBgPool = sequence.length > 3 ? sequence.slice(3) : (sequence.length > 1 ? sequence.slice(1) : sequence);
+
+    contentSlides.forEach((s, idx) => {
         const slide = pptx.addSlide();
 
-        // Pick background and derive text colors from its actual brightness
-        const bgEntry = pickBg(idx, s.type);
-        const bgBrightness = bgEntry ? bgEntry.brightness : (s.bgType === 'title' || s.bgType === 'dark' ? 30 : 240);
-        const isDark = bgBrightness < 140;
-        const textColor = isDark ? hex(b.textLight) : hex(b.textDark);
-        const headingColor = isDark ? hex(b.textLight) : hex(b.primaryColor);
-
-        if (bgEntry) {
-            const bgImg = bgEntry.dataUrl;
-            const bgData = bgImg.startsWith('data:') ? bgImg.substring(5) : bgImg;
-            slide.background = { data: bgData };
-        } else {
-            slide.background = { color: isDark ? hex(b.secondaryColor) : 'F5F6F7' };
-        }
+        // Pick background by cycling through the content pool
+        const bgEntry = contentBgPool.length > 0 ? contentBgPool[idx % contentBgPool.length] : null;
+        const colors = applyBg(slide, bgEntry);
+        const isDark = colors.isDark;
+        const textColor = colors.textColor;
+        const headingColor = colors.headingColor;
 
         // Logo: only render if it will be visible against the background
         // (white logo on dark bg = visible; white logo on light bg = invisible, skip)
