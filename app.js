@@ -389,45 +389,62 @@ function getImageBrightness(dataUrl) {
 // ============================================================
 
 async function extractLogo(zip) {
-    // Scan ALL media for wide-aspect logo candidates and pick the one with the
-    // most visible (non-transparent, non-pure-white) content.
-    const allMedia = [];
-    zip.folder('ppt/media').forEach((path, file) => {
-        if (path.match(/\.(png|jpg|jpeg)$/i)) allMedia.push(path);
-    });
+    // Strategy: a brand logo appears on MANY slides (or in the slide master).
+    // A customer-logo / one-off graphic only appears on 1-2 slides. So we
+    // count how often each image is referenced and only consider images that
+    // appear on >=3 slides OR are in a slide master. This prevents picking
+    // up customer logos like "Lemonade" from a template's customer section.
 
+    const refCount = {};
+    const addRefs = async (relsPath, weight) => {
+        const f = zip.file(relsPath);
+        if (!f) return;
+        const xml = await f.async('string');
+        for (const m of xml.matchAll(/Target="\.\.\/media\/([^"]+)"/g)) {
+            refCount[m[1]] = (refCount[m[1]] || 0) + weight;
+        }
+    };
+
+    // Slides
+    for (let i = 1; i <= 100; i++) {
+        await addRefs(`ppt/slides/_rels/slide${i}.xml.rels`, 1);
+    }
+    // Slide masters get a strong boost (template-level branding)
+    for (let m = 1; m <= 5; m++) {
+        await addRefs(`ppt/slideMasters/_rels/slideMaster${m}.xml.rels`, 5);
+    }
+
+    // Filter to images that look like logos AND appear in multiple places
     let bestLogo = null;
     let bestScore = -1;
 
-    for (const filename of allMedia) {
+    for (const [filename, count] of Object.entries(refCount)) {
+        // Must appear on multiple slides or be in a master
+        if (count < 3) continue;
+
         const mediaFile = zip.file('ppt/media/' + filename);
         if (!mediaFile) continue;
-
         const data = await mediaFile.async('arraybuffer');
-        // Skip very large files (backgrounds) and very tiny files (dots/icons)
-        if (data.byteLength > 500000 || data.byteLength < 800) continue;
+        // Logos are small-to-medium sized
+        if (data.byteLength > 200000 || data.byteLength < 800) continue;
 
         const dataUrl = arrayBufferToDataURL(data, getMime(filename));
         const dims = await getImageDimensions(dataUrl);
         if (!dims) continue;
 
-        // Logo heuristic: wide aspect ratio
+        // Skip background-sized images
+        if (dims.width > 1800 || dims.height > 800) continue;
+        if (dims.width < 80 || dims.height < 20) continue;
+
         const aspect = dims.width / dims.height;
-        if (aspect < 1.5 || aspect > 15) continue;
-        if (dims.width < 150 || dims.width > 3000) continue;
-        if (dims.height < 20 || dims.height > 600) continue;
+        if (aspect < 1.2 || aspect > 15) continue;
 
-        // Analyze pixel content — must have visible (non-blank) pixels
         const analysis = await analyzeLogoPixels(dataUrl);
-        if (!analysis || analysis.visibleRatio < 0.02) continue;
+        if (!analysis || analysis.visibleRatio < 0.03) continue;
 
-        let score = 0;
+        let score = count * 2;  // recurrence is the strongest signal
         if (aspect > 2 && aspect < 8) score += 3;
-        else score += 1;
-        // Density of visible pixels: logos typically have 5-50% visible content
-        if (analysis.visibleRatio > 0.05 && analysis.visibleRatio < 0.6) score += 4;
-        else score += 1;
-        if (data.byteLength > 3000 && data.byteLength < 200000) score += 1;
+        if (analysis.visibleRatio > 0.05 && analysis.visibleRatio < 0.6) score += 2;
 
         if (score > bestScore) {
             bestScore = score;
@@ -435,6 +452,11 @@ async function extractLogo(zip) {
         }
     }
 
+    if (bestLogo) {
+        console.log(`Picked logo (score ${bestScore})`);
+    } else {
+        console.log('No reliable logo found in template — skipping logo overlay');
+    }
     return bestLogo;
 }
 
@@ -582,7 +604,8 @@ function renderBrands() {
         savedBrandsList.innerHTML = '<p class="no-brands">No saved brands yet. Upload a .pptx to get started!</p>';
         return;
     }
-    savedBrandsList.innerHTML = brands.map((b, i) => `
+    const clearBtn = `<button class="clear-all-brands-btn" type="button">Clear all saved brands</button>`;
+    savedBrandsList.innerHTML = clearBtn + brands.map((b, i) => `
         <div class="brand-card" data-index="${i}">
             <button class="brand-card-delete" data-index="${i}" title="Delete">&times;</button>
             <div class="brand-card-name">${escapeHTML(b.name)}</div>
@@ -608,6 +631,19 @@ function renderBrands() {
             renderBrands();
         });
     });
+    const clearAllBtn = savedBrandsList.querySelector('.clear-all-brands-btn');
+    if (clearAllBtn) {
+        clearAllBtn.addEventListener('click', () => {
+            if (!confirm('Delete ALL saved brands? This cannot be undone.')) return;
+            brands.length = 0;
+            persistBrands();
+            activeBrand = null;
+            activeBrandBadge.textContent = 'None';
+            window.__previewBackgrounds = null;
+            brandPreview.classList.add('hidden');
+            renderBrands();
+        });
+    }
 }
 
 renderBrands();

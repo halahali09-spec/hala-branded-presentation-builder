@@ -180,6 +180,12 @@ hr { border: none; border-top: 1px solid #E5E7EB; margin: 24px 0; }
 }
 .brand-card-delete:hover { color: #DC2626; }
 .no-brands { color: #9CA3AF; font-size: 14px; font-style: italic; }
+.clear-all-brands-btn {
+    width: 100%; margin-bottom: 12px; padding: 8px 14px;
+    background: #FEF2F2; color: #DC2626; border: 1px solid #FECACA;
+    border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.clear-all-brands-btn:hover { background: #FEE2E2; }
 
 /* ========== STEP 2 HEADER ========== */
 .step2-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
