@@ -564,90 +564,136 @@ contentInput.addEventListener('input', () => {
 function parseContent(text) {
     if (!text.trim()) return [];
 
-    // Split by --- or double blank lines
-    const rawSections = text.split(/\n\s*---\s*\n|\n\s*---\s*$|^\s*---\s*\n/);
-    const slides = [];
+    // Normalize line endings and strip leading/trailing blank lines
+    const normalized = text.replace(/\r\n/g, '\n').trim();
 
-    for (const section of rawSections) {
-        const trimmed = section.trim();
-        if (!trimmed) continue;
+    // STEP 1: Find slide boundaries.
+    // A new slide starts when we see ANY of:
+    //   - A "---" separator line
+    //   - A line starting with "# " or "## "
+    //   - A line matching "Slide N" / "Slide N —" / "Slide N:" / "Slide N." / "Slide N -"
+    //   - A numbered line "1." / "1)" at start (only if it looks like a slide title, not a list item)
+    const lines = normalized.split('\n');
+    const slideStartIdx = [];
+    const isSlideHeader = (line) => {
+        const l = line.trim();
+        if (!l) return false;
+        if (l === '---' || l === '***') return 'sep';
+        if (/^#{1,2}\s+/.test(l)) return 'hash';
+        if (/^slide\s*\d+\b/i.test(l)) return 'slidekw';
+        return false;
+    };
 
-        // Further split by double newlines within a section (each becomes a slide)
-        const subSections = trimmed.split(/\n\s*\n/);
+    for (let i = 0; i < lines.length; i++) {
+        if (isSlideHeader(lines[i])) slideStartIdx.push(i);
+    }
 
-        for (const sub of subSections) {
-            const t = sub.trim();
-            if (!t) continue;
-
-            const lines = t.split('\n');
-            const firstLine = lines[0].trim();
-
-            // Title slide: # heading (single hash)
-            if (firstLine.startsWith('# ') && !firstLine.startsWith('## ')) {
-                const title = firstLine.replace(/^# /, '');
-                const rest = lines.slice(1).map(l => l.trim()).filter(l => l).join('\n');
-                slides.push({
-                    type: isThankYou(title) ? 'thank-you' : 'title',
-                    bgType: 'title',
-                    data: { title, subtitle: rest }
-                });
-                continue;
-            }
-
-            // Content with heading: ## heading
-            if (firstLine.startsWith('## ')) {
-                const heading = firstLine.replace(/^## /, '');
-                const bodyLines = lines.slice(1).map(l => l.trim()).filter(l => l);
-                const bodyText = bodyLines.join('\n');
-
-                // Two columns
-                if (bodyText.match(/LEFT:/i) && bodyText.match(/RIGHT:/i)) {
-                    const leftMatch = bodyText.match(/LEFT:\s*([\s\S]*?)(?=RIGHT:)/i);
-                    const rightMatch = bodyText.match(/RIGHT:\s*([\s\S]*)/i);
-                    slides.push({
-                        type: 'two-column', bgType: 'light',
-                        data: {
-                            heading,
-                            left: leftMatch ? leftMatch[1].trim() : '',
-                            right: rightMatch ? rightMatch[1].trim() : '',
-                        }
-                    });
-                    continue;
-                }
-
-                // Bullets
-                const allBullets = bodyLines.length > 0 && bodyLines.every(l => l.startsWith('- ') || l.startsWith('* '));
-                if (allBullets) {
-                    slides.push({
-                        type: 'bullets', bgType: 'light',
-                        data: { heading, bullets: bodyLines.map(l => l.replace(/^[-*] /, '')).join('\n') }
-                    });
-                    continue;
-                }
-
-                // Regular content
-                slides.push({
-                    type: 'content', bgType: 'light',
-                    data: { heading, body: bodyLines.join('\n') }
-                });
-                continue;
-            }
-
-            // Plain text without any heading marker
-            // Check if it has bullets
-            const allBullets = lines.every(l => l.trim().startsWith('- ') || l.trim().startsWith('* '));
-            if (allBullets && lines.length > 1) {
-                slides.push({
-                    type: 'bullets', bgType: 'light',
-                    data: { heading: '', bullets: lines.map(l => l.trim().replace(/^[-*] /, '')).join('\n') }
-                });
-            } else {
-                slides.push({
-                    type: 'content', bgType: 'light',
-                    data: { heading: '', body: t }
-                });
-            }
+    // If we found NO headers, fall back to splitting by blank lines
+    let sections = [];
+    if (slideStartIdx.length === 0) {
+        sections = normalized.split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
+    } else {
+        // If first non-blank line isn't a header, treat it as an implicit first section
+        const firstHeaderLine = slideStartIdx[0];
+        if (firstHeaderLine > 0) {
+            const pre = lines.slice(0, firstHeaderLine).join('\n').trim();
+            if (pre) sections.push(pre);
         }
+        for (let i = 0; i < slideStartIdx.length; i++) {
+            const start = slideStartIdx[i];
+            const end = i + 1 < slideStartIdx.length ? slideStartIdx[i + 1] : lines.length;
+            const chunk = lines.slice(start, end).join('\n').trim();
+            // Skip pure separator lines
+            if (chunk === '---' || chunk === '***') continue;
+            if (chunk) sections.push(chunk);
+        }
+    }
+
+    // STEP 2: Convert each section into a slide
+    const slides = [];
+    for (let idx = 0; idx < sections.length; idx++) {
+        const section = sections[idx];
+        const sLines = section.split('\n').map(l => l).filter((l, i, arr) => !(i === 0 && !l.trim()));
+        if (sLines.length === 0) continue;
+
+        let firstLine = sLines[0].trim();
+        let isTitleSlide = false;
+        let heading = '';
+
+        // Strip leading separator if present
+        if (firstLine === '---' || firstLine === '***') {
+            sLines.shift();
+            firstLine = (sLines[0] || '').trim();
+        }
+
+        // Detect heading style
+        if (/^#\s+/.test(firstLine) && !/^##\s+/.test(firstLine)) {
+            heading = firstLine.replace(/^#\s+/, '').trim();
+            isTitleSlide = true;
+            sLines.shift();
+        } else if (/^##\s+/.test(firstLine)) {
+            heading = firstLine.replace(/^##\s+/, '').trim();
+            sLines.shift();
+        } else if (/^slide\s*\d+\b/i.test(firstLine)) {
+            // "Slide 2 — What is Innovation?" → heading = "What is Innovation?"
+            heading = firstLine.replace(/^slide\s*\d+\s*[—\-:.)]*\s*/i, '').trim();
+            // First slide using this pattern is treated as title
+            if (idx === 0) isTitleSlide = true;
+            sLines.shift();
+        } else {
+            // No header marker — use first line as heading
+            heading = firstLine;
+            if (idx === 0) isTitleSlide = true;
+            sLines.shift();
+        }
+
+        const bodyLines = sLines.map(l => l.trim()).filter(Boolean);
+        const bodyText = bodyLines.join('\n');
+
+        // Title / thank-you slide
+        if (isTitleSlide) {
+            slides.push({
+                type: isThankYou(heading) ? 'thank-you' : 'title',
+                bgType: 'title',
+                data: { title: heading, subtitle: bodyText }
+            });
+            continue;
+        }
+
+        // Two columns
+        if (/LEFT:/i.test(bodyText) && /RIGHT:/i.test(bodyText)) {
+            const leftMatch = bodyText.match(/LEFT:\s*([\s\S]*?)(?=RIGHT:)/i);
+            const rightMatch = bodyText.match(/RIGHT:\s*([\s\S]*)/i);
+            slides.push({
+                type: 'two-column', bgType: 'light',
+                data: {
+                    heading,
+                    left: leftMatch ? leftMatch[1].trim() : '',
+                    right: rightMatch ? rightMatch[1].trim() : '',
+                }
+            });
+            continue;
+        }
+
+        // Bullets — if MOST body lines start with - or * or •
+        const bulletLines = bodyLines.filter(l => /^[-*•]\s+/.test(l));
+        if (bulletLines.length >= 2 && bulletLines.length >= bodyLines.length * 0.6) {
+            const bullets = bodyLines
+                .map(l => l.replace(/^[-*•]\s+/, ''))
+                .filter(Boolean)
+                .join('\n');
+            slides.push({
+                type: 'bullets', bgType: 'light',
+                data: { heading, bullets }
+            });
+            continue;
+        }
+
+        // Regular content
+        slides.push({
+            type: 'content', bgType: 'light',
+            data: { heading, body: bodyText }
+        });
     }
 
     return slides;
